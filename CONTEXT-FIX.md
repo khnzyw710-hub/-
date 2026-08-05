@@ -63,31 +63,24 @@ cp .claude/settings.json ~/.claude/settings.json
 
 אם כבר קיים `~/.claude/settings.json`, מזג את שני המפתחות לתוכו במקום להחליף.
 
-## אופציונלי: להשאיר skills בלי שייטענו בהתחלה
+## על skills — נבדק ונדחה
 
-זה עונה על הבקשה "שהכל יישאר, רק לא ייטען בהתחלה, ו-Claude יפנה לשם כשצריך".
-ההגדרה `disable-model-invocation` **לא מוחקת כלום** — היא רק מונעת מ-Claude לטעון את
-התיאור בפתיחת הסשן. הפעלה ידנית עם `/שם-הskill` ממשיכה לעבוד רגיל.
+השאלה היתה אם אפשר להשאיר skills מותקנים בלי שייטענו בפתיחה, ושהם ייטענו רק לפי צורך.
+נבדקו שתי דרכים:
 
-הוסף ל-`settings.json` רק אם רוצים (חוסך ~2,100 טוקנים):
+**`skillOverrides` ב-settings.json — לא מתאים.**
+בניגוד למה שמופיע בכמה מקורות, ההגדרה הזו **משביתה** skill לחלוטין. הבינארי מחזיר:
+`Skill "..." is disabled via skillOverrides. Re-enable it in /skills or remove the
+override from your settings to run it.` כלומר ה-skill לא יהיה זמין גם בהפעלה ידנית —
+ההפך מהמטרה.
 
-```json
-{
-  "skillOverrides": {
-    "learn":                { "disable-model-invocation": true },
-    "ai-video-production":  { "disable-model-invocation": true },
-    "yourzone-marketing":   { "disable-model-invocation": true },
-    "algorithmic-art":      { "disable-model-invocation": true },
-    "slack-gif-creator":    { "disable-model-invocation": true },
-    "skill-creator":        { "disable-model-invocation": true },
-    "internal-comms":       { "disable-model-invocation": true },
-    "brand-guidelines":     { "disable-model-invocation": true },
-    "theme-factory":        { "disable-model-invocation": true }
-  }
-}
-```
+**`disable-model-invocation` — שדה של ה-skill, לא של ההגדרות.**
+זהו שדה ב-frontmatter של `SKILL.md` עצמו, לא ערך בתוך `skillOverrides`. הוא אכן הופך
+skill ל"ניתן להפעלה ידנית בלבד", אבל דורש עריכה של כל קובץ skill בנפרד, וה-skills
+מסונכרנים מהחשבון ב-claude.ai ולכן עריכה מקומית עלולה להידרס.
 
-לא הופעל כברירת מחדל — החיסכון קטן יחסית והשינוי משנה התנהגות.
+**בכל מקרה החיסכון לא מצדיק את זה:** כל תיאורי ה-skills ביחד הם ~2,100 טוקנים — 5%
+מהבסיס. זה לא מה שגרם לבעיה.
 
 ## על ה-Connectors
 
