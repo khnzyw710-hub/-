@@ -2,8 +2,8 @@
 # =============================================================================
 #  Claude Code - "Context limit reached" full diagnose & fix
 # =============================================================================
-#  Run it:      bash .claude/fix-context-limit.sh
-#  Dry run:     bash .claude/fix-context-limit.sh --check
+#  Run it:      bash scripts/fix-context-limit.sh
+#  Dry run:     bash scripts/fix-context-limit.sh --check
 #
 #  SAFETY CONTRACT - this script never removes anything.
 #    * It only ADDS keys to your settings file, keeping every existing key.

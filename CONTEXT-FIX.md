@@ -114,12 +114,12 @@
 
 ההגדרות למעלה מטפלות בגורם המרכזי. אבל יש עוד מצבים שיכולים לגרום לאותה הודעה,
 וחלקם **גוברים** על קובץ ההגדרות. כדי לא לקחת סיכון, הסקריפט
-`.claude/fix-context-limit.sh` בודק את **כולם** ומדווח על כל אחד בנפרד:
+`scripts/fix-context-limit.sh` בודק את **כולם** ומדווח על כל אחד בנפרד:
 
 ```bash
-bash .claude/fix-context-limit.sh            # בודק, מתקן, ומדפיס דוח מלא
-bash .claude/fix-context-limit.sh --check    # בדיקה בלבד — לא נוגע בשום קובץ
-bash .claude/fix-context-limit.sh --no-profile # בלי לגעת ב-.zshrc/.bashrc
+bash scripts/fix-context-limit.sh            # בודק, מתקן, ומדפיס דוח מלא
+bash scripts/fix-context-limit.sh --check    # בדיקה בלבד — לא נוגע בשום קובץ
+bash scripts/fix-context-limit.sh --no-profile # בלי לגעת ב-.zshrc/.bashrc
 ```
 
 **חוזה הבטיחות של הסקריפט — הוא לא מוחק כלום.**
@@ -185,7 +185,7 @@ export MAX_MCP_OUTPUT_TOKENS=10000
 **יש לך שכפול של הריפו?** אז זו הדרך המלאה, בטרמינל רגיל (לא בתוך Claude Code):
 
 ```bash
-bash .claude/fix-context-limit.sh
+bash scripts/fix-context-limit.sh
 ```
 
 **אין לך שכפול?** הפקודה הבאה עושה את החלק המרכזי בלבד — לא צריך לשכפל שום דבר,
@@ -231,8 +231,8 @@ PY
 הגדרות של ריפו חלות רק בתוך הריפו. בתוך שכפול של הריפו הזה יש שני סקריפטים:
 
 ```bash
-bash .claude/fix-context-limit.sh   # מומלץ — בודק את כל 16 הגורמים ומתקן
-bash .claude/apply-globally.sh      # מינימלי — רק כותב את ההגדרות
+bash scripts/fix-context-limit.sh   # מומלץ — בודק את כל 16 הגורמים ומתקן
+bash scripts/apply-globally.sh      # מינימלי — רק כותב את ההגדרות
 ```
 
 שניהם בטוחים להרצה חוזרת: מגבים קובץ קיים ל-`.bak` וממזגים רק את המפתחות הרלוונטיים,
@@ -297,7 +297,7 @@ Figma נשאר מחובר לפי בקשה.
 לתהליך שרץ. פקודה אחת נותנת את התשובה המלאה:
 
 ```bash
-bash .claude/fix-context-limit.sh --check
+bash scripts/fix-context-limit.sh --check
 ```
 
 היא לא נוגעת בשום קובץ, ומדפיסה בדיוק איזה מ-16 הגורמים פעיל אצלך. בלי שכפול של
