@@ -31,16 +31,7 @@ for arg in "$@"; do
   esac
 done
 
-# --- the four values we want in place -----------------------------------------
-WANT_AUTOCOMPACT_WINDOW=120000
-WANT_MCP_OUTPUT_TOKENS=10000
-WANT_TOOL_SEARCH=true
-
-FINDINGS=()
-BLOCKERS=()
-note()    { FINDINGS+=("$1"); }
-blocker() { BLOCKERS+=("$1"); }
-
+# --- helpers ------------------------------------------------------------------
 hr() { printf '%s\n' "-------------------------------------------------------------"; }
 h1() { printf '\n\033[1m%s\033[0m\n' "$1"; hr; }
 ok()   { printf '  \033[32mOK\033[0m    %s\n' "$1"; }
@@ -50,6 +41,44 @@ inf()  { printf '        %s\n' "$1"; }
 
 PY=""
 for c in python3 python; do command -v "$c" >/dev/null 2>&1 && { PY="$c"; break; }; done
+
+# --- target values: read from .claude/settings.json (single source of truth) --
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJ_SETTINGS="$REPO_ROOT/.claude/settings.json"
+
+WANT_AUTOCOMPACT_WINDOW=120000
+WANT_MCP_OUTPUT_TOKENS=10000
+WANT_TOOL_SEARCH=true
+
+if [ -f "$PROJ_SETTINGS" ] && [ -n "$PY" ]; then
+  eval "$("$PY" - "$PROJ_SETTINGS" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    s = json.load(open(sys.argv[1]))
+    w = s.get("autoCompactWindow")
+    if isinstance(w, int) and w >= 100000:
+        print("WANT_AUTOCOMPACT_WINDOW=%d" % w)
+    e = s.get("env", {})
+    m = e.get("MAX_MCP_OUTPUT_TOKENS")
+    if m is not None:
+        try:
+            int(str(m))
+            print("WANT_MCP_OUTPUT_TOKENS=%s" % m)
+        except ValueError:
+            pass
+    t = e.get("ENABLE_TOOL_SEARCH")
+    if t in ("true", "false", True, False):
+        print("WANT_TOOL_SEARCH=%s" % str(t).lower())
+except Exception:
+    pass
+PY
+)"
+fi
+
+FINDINGS=()
+BLOCKERS=()
+note()    { FINDINGS+=("$1"); }
+blocker() { BLOCKERS+=("$1"); }
 
 printf '\n\033[1m Claude Code - context limit: full check\033[0m\n'
 

@@ -1,11 +1,11 @@
 # Context Limit Fix for Claude Code
 
-Fixes the recurring **"Context limit reached · /compact or /clear to continue"** message
+Fixes the recurring **"Context limit reached / /compact or /clear to continue"** message
 in Claude Code by tuning auto-compaction timing and enabling lazy MCP tool loading.
 
 ## The Problem
 
-Claude Code blocks at 177,000 tokens (200K − 23K). Default auto-compaction starts at 167K —
+Claude Code blocks at 177,000 tokens (200K - 23K). Default auto-compaction starts at 167K —
 only 10K margin. A single large MCP tool result (up to 25K tokens) can jump over that gap,
 skipping compaction entirely and hitting the wall.
 
@@ -41,29 +41,56 @@ PY
 
 Then close and reopen Claude Code.
 
-## Full Diagnostic (16 Checks)
+## Full Setup (Clone This Repo)
 
-Clone this repo and run:
+For the full diagnostic (16 checks) and organized settings chain:
+
+```bash
+git clone <this-repo>
+cd -
+bash scripts/setup.sh               # full chain: diagnose + fix + propagate
+bash scripts/setup.sh --check       # dry run only
+```
+
+### What `setup.sh` Does
+
+```
+.claude/settings.json           ← single source of truth for all values
+        │
+        ├─ Step 1 (fix-context-limit.sh):
+        │       ├─ runs 16 diagnostic checks
+        │       ├─ writes values to ~/.claude/settings.json
+        │       └─ writes shell profile exports
+        │
+        └─ Step 2 (apply-globally.sh):
+                └─ merges project settings into ~/.claude/settings.json
+```
+
+Individual steps can also run separately:
 
 ```bash
 bash scripts/fix-context-limit.sh            # diagnose + fix
 bash scripts/fix-context-limit.sh --check    # dry run only
+bash scripts/apply-globally.sh               # propagate project → global
 ```
 
-See [CONTEXT-FIX.md](CONTEXT-FIX.md) for the full technical analysis (in Hebrew).
-
 ## What It Sets
+
+All values are defined in `.claude/settings.json` — one source of truth.
 
 | Setting | Value | Effect |
 |---|---|---|
 | `ENABLE_TOOL_SEARCH` | `true` | Lazy tool schema loading |
 | `autoCompactWindow` | `120000` | Compaction at ~87K instead of 167K |
 | `autoCompactEnabled` | `true` | Ensure compaction is on |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | `120000` | Same value as env var for sub-agents |
 | `MAX_MCP_OUTPUT_TOKENS` | `10000` | Cap single MCP result |
 
 ## Safety
 
 - Scripts **never delete** anything — only add keys
 - Every file is backed up to `.bak` before writing
-- Stricter user values are preserved
+- Stricter user values are preserved (e.g. your `MAX_MCP_OUTPUT_TOKENS=4000` stays)
 - Safe to run repeatedly
+
+See [CONTEXT-FIX.md](CONTEXT-FIX.md) for the full technical analysis (in Hebrew).
