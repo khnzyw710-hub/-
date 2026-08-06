@@ -113,6 +113,63 @@ both the settings file AND the shell profile — so nothing in between can break
 15. Oversized saved conversation (.jsonl)
 16. `CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE` detected (reported, not set)
 
+## When to Run Each Script
+
+| Scenario | Command |
+|---|---|
+| First-time setup on a machine | `bash scripts/setup.sh` |
+| Dry run — see what would change | `bash scripts/setup.sh --check` |
+| After editing `.claude/settings.json` | `bash scripts/setup.sh` (re-propagates) |
+| Diagnose without propagating | `bash scripts/fix-context-limit.sh --check` |
+| Fix user settings only (no propagation) | `bash scripts/fix-context-limit.sh` |
+| Fix without touching shell profile | `bash scripts/fix-context-limit.sh --no-profile` |
+| Propagate only (skip diagnostics) | `bash scripts/apply-globally.sh` |
+| On a new machine / fresh install | `bash scripts/setup.sh` |
+| After "Context limit reached" returns | `bash scripts/fix-context-limit.sh --check` (diagnose first) |
+
+## Execution Flow — What Runs When
+
+### `setup.sh` (full chain)
+
+```
+setup.sh "$@"
+  │
+  ├─ Step 1: bash scripts/fix-context-limit.sh "$@"
+  │    │
+  │    ├─ Detect platform (macOS/Linux/WSL/Windows)
+  │    ├─ Find python3 (required for JSON merging)
+  │    ├─ Read target values from .claude/settings.json
+  │    │    (falls back to hardcoded defaults if file missing or python3 absent)
+  │    ├─ Run 16 diagnostic checks (checks 1–16)
+  │    │    Each check: ok / warn / block
+  │    │    Blockers are collected and shown at the end
+  │    ├─ Write fix to ~/.claude/settings.json
+  │    │    (backup to .bak, merge only relevant keys, preserve stricter values)
+  │    ├─ Optionally write shell exports to profile
+  │    │    (backup to .bak, appended once, marked with comment block)
+  │    └─ Print verdict: 0 blockers = ready, N blockers = needs manual action
+  │
+  └─ Step 2: bash scripts/apply-globally.sh    (skipped in --check mode)
+       │
+       ├─ Read .claude/settings.json (source)
+       ├─ Backup ~/.claude/settings.json to .bak
+       ├─ Merge: autoCompactWindow, autoCompactEnabled, env vars
+       │    (stricter user values preserved)
+       └─ Validate result is valid JSON
+```
+
+### Error Paths
+
+| Error | What happens |
+|---|---|
+| python3 not found | `fix-context-limit.sh`: skips settings write, reports error. `apply-globally.sh`: exits with error. |
+| `.claude/settings.json` missing | Falls back to hardcoded defaults (120000, 10000, true). |
+| `~/.claude/settings.json` invalid JSON | Backed up to `.bak`, rewritten from scratch. |
+| `~/.claude/settings.json` doesn't exist | Created from `.claude/settings.json` directly. |
+| Enterprise managed-settings.json exists | Reported as blocker — script cannot override admin settings. |
+| Shell export contradicts settings file | Reported as blocker — user must remove the export manually. |
+| Permission denied on settings file | Python write fails, script reports error, original file untouched. |
+
 ## Testing (Manual)
 
 1. `bash scripts/setup.sh --check` — verify full chain runs without writing

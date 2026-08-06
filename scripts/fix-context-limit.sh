@@ -19,6 +19,31 @@
 
 set -uo pipefail
 
+show_help() {
+  cat <<'HELP'
+Claude Code - "Context limit reached" full diagnose & fix
+
+Usage:
+  bash scripts/fix-context-limit.sh [OPTIONS]
+
+Options:
+  --check, --dry-run   Run all 16 diagnostic checks without writing any file.
+  --no-profile         Skip writing exports to the shell profile (~/.zshrc etc).
+  -h, --help           Show this help and exit.
+
+What it does:
+  1. Detects your platform (macOS / Linux / WSL / Windows)
+  2. Locates all settings files and checks for enterprise overrides
+  3. Scans 16 known causes of the "Context limit reached" message
+  4. Writes the fix to ~/.claude/settings.json (backup to .bak first)
+  5. Optionally appends shell exports to your profile (backup to .bak)
+  6. Reports blockers that need manual action (never deletes anything)
+
+Target values are read from .claude/settings.json (single source of truth).
+Safe to run repeatedly — idempotent by design.
+HELP
+}
+
 CHECK_ONLY=0
 WRITE_PROFILE=1
 for arg in "$@"; do
@@ -26,7 +51,7 @@ for arg in "$@"; do
     --check|--dry-run) CHECK_ONLY=1 ;;
     --no-profile)      WRITE_PROFILE=0 ;;
     -h|--help)
-      sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      show_help
       exit 0 ;;
   esac
 done
@@ -86,6 +111,7 @@ printf '\n\033[1m Claude Code - context limit: full check\033[0m\n'
 # 0. Platform
 # =============================================================================
 h1 "0. Platform"
+inf "Detecting OS and available tools"
 
 UNAME="$(uname -s 2>/dev/null || echo unknown)"
 IS_WSL=0
@@ -169,6 +195,7 @@ done
 # 2. Environment variables that can defeat the fix
 # =============================================================================
 h1 "2. Environment variables in this shell"
+inf "Shell exports override settings files — checking for conflicts"
 
 is_falsy() { case "$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z')" in 0|false|no|off) return 0 ;; *) return 1 ;; esac; }
 is_truthy(){ case "$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z')" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
@@ -243,6 +270,7 @@ fi
 # 3. Shell profiles - a profile export beats the settings file
 # =============================================================================
 h1 "3. Shell profiles"
+inf "Profile exports persist across sessions — scanning for overrides"
 
 PROFILES=("$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile")
 WATCH='ENABLE_TOOL_SEARCH|CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS|CLAUDE_CODE_MAX_CONTEXT_TOKENS|DISABLE_AUTO_COMPACT|DISABLE_COMPACT|CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE|ANTHROPIC_BASE_URL|MAX_THINKING_TOKENS|CLAUDE_CODE_AUTO_COMPACT_WINDOW|MAX_MCP_OUTPUT_TOKENS'
@@ -265,6 +293,7 @@ fi
 # 4. The /config auto-compact toggle
 # =============================================================================
 h1 "4. Auto-compact toggle"
+inf "If auto-compact is off, conversations grow until they hit the wall"
 
 if [ -f "$LEGACY_CONFIG" ] && [ -n "$PY" ]; then
   AC=$("$PY" - "$LEGACY_CONFIG" <<'PY' 2>/dev/null
@@ -289,6 +318,7 @@ fi
 # 5. What is filling the window at startup
 # =============================================================================
 h1 "5. Startup weight"
+inf "What fills the context window before you type a word"
 
 if [ -f "$LEGACY_CONFIG" ] && [ -n "$PY" ]; then
   "$PY" - "$LEGACY_CONFIG" <<'PY' || true
@@ -341,13 +371,15 @@ fi
 # 6. Apply the fix
 # =============================================================================
 h1 "6. Fix"
+inf "Writing settings to $USER_SETTINGS"
 
 if [ "$CHECK_ONLY" -eq 1 ]; then
   inf "--check given: nothing was written."
 elif [ -z "$PY" ]; then
   bad "python3 not available - cannot write settings automatically"
 else
-  "$PY" - "$USER_SETTINGS" "$WANT_AUTOCOMPACT_WINDOW" "$WANT_MCP_OUTPUT_TOKENS" "$WANT_TOOL_SEARCH" <<'PY'
+  PY_OK=0
+  "$PY" - "$USER_SETTINGS" "$WANT_AUTOCOMPACT_WINDOW" "$WANT_MCP_OUTPUT_TOKENS" "$WANT_TOOL_SEARCH" <<'PY' || PY_OK=$?
 import json, os, shutil, sys, pathlib
 path = pathlib.Path(sys.argv[1]); window = int(sys.argv[2])
 mcp_out = sys.argv[3]; tool_search = sys.argv[4]
@@ -423,7 +455,7 @@ print("        final: autoCompactWindow=%s autoCompactEnabled=%s ENABLE_TOOL_SEA
       % (data["autoCompactWindow"], data["autoCompactEnabled"], env["ENABLE_TOOL_SEARCH"],
          env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], env["MAX_MCP_OUTPUT_TOKENS"]))
 PY
-  if [ $? -eq 0 ]; then
+  if [ "$PY_OK" -eq 0 ]; then
     ok "settings written (backup at $USER_SETTINGS.bak)"
   else
     bad "could not write $USER_SETTINGS - nothing was changed, your file is untouched"
@@ -522,4 +554,12 @@ inf "line upward, so instead of a clean local message you would hit real server"
 inf "errors in the middle of work, and lose the turn. That adds risk, so it stays off."
 inf ""
 inf "Nothing was deleted. No connector, MCP server, skill or file was removed."
+
+if [ "$CHECK_ONLY" -eq 1 ]; then
+  inf "Mode: dry run (--check). No files were modified."
+else
+  inf "Source of truth: $PROJ_SETTINGS"
+  inf "Settings written to: $USER_SETTINGS"
+  [ "$WRITE_PROFILE" -eq 1 ] && inf "Shell profile: exports appended (if not already present)"
+fi
 printf '\n'

@@ -1,19 +1,59 @@
 #!/usr/bin/env bash
-# Applies the context-limit fix to the *user* settings (~/.claude/settings.json)
-# so it takes effect in every project, not only in this repository.
+# =============================================================================
+#  Propagate project settings to user-level settings
+# =============================================================================
+#  Merges .claude/settings.json (project, this repo) into
+#  ~/.claude/settings.json (user-level, all projects).
 #
-#   bash scripts/apply-globally.sh
+#  Usage:
+#    bash scripts/apply-globally.sh
 #
-# Safe to run more than once. An existing file is backed up to <file>.bak and
-# only the relevant keys are merged in - nothing else is touched or removed.
-# Stricter values already set by the user are preserved (never loosened).
+#  What it does:
+#    1. Reads target values from .claude/settings.json (single source of truth)
+#    2. Backs up ~/.claude/settings.json to ~/.claude/settings.json.bak
+#    3. Merges only the relevant keys — everything else is untouched
+#    4. Validates the result is valid JSON
+#
+#  Safety:
+#    - Never deletes any key from the destination file
+#    - Stricter user values are preserved (e.g. your MAX_MCP_OUTPUT_TOKENS=4000 stays)
+#    - Backs up before writing
+#    - Safe to run repeatedly (idempotent)
+#
+#  Requires: python3
+# =============================================================================
 
 set -euo pipefail
+
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help)
+      cat <<'HELP'
+Propagate project settings to user-level settings.
+
+Usage:
+  bash scripts/apply-globally.sh
+
+Merges .claude/settings.json (this repo) into ~/.claude/settings.json
+so the context-limit fix applies to all projects, not just this one.
+
+Stricter values you already set are preserved. Backs up before writing.
+Requires python3.
+HELP
+      exit 0 ;;
+  esac
+done
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$REPO_ROOT/.claude/settings.json"
 DEST_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 DEST="$DEST_DIR/settings.json"
+
+echo ""
+echo "  Propagating project settings → user-level settings"
+echo "  Source: $SRC"
+echo "  Target: $DEST"
+echo ""
 
 [ -f "$SRC" ] || { echo "not found: $SRC" >&2; exit 1; }
 
@@ -74,3 +114,7 @@ PY
 fi
 
 python3 -c "import json,sys; json.load(open(sys.argv[1])); print('valid JSON')" "$DEST"
+
+echo ""
+echo "  Done. Settings from this project now apply to all projects."
+echo "  Open a new terminal for changes to take effect."
