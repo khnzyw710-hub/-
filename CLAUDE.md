@@ -170,6 +170,118 @@ setup.sh "$@"
 | Shell export contradicts settings file | Reported as blocker — user must remove the export manually. |
 | Permission denied on settings file | Python write fails, script reports error, original file untouched. |
 
+## Bot Conversation Script
+
+When a user connects to this project, follow this conversation flow.
+Every step has an exact message template — use it as-is, adjusting only
+the dynamic values (marked with `{...}`).
+
+### Phase 1 — Greeting & Intent Detection
+
+When the user first mentions context limits, blocking, or asks for help:
+
+```
+BOT: "אני אריץ אבחון מהיר (16 בדיקות, קריאה בלבד, לא משנה כלום).
+      רוצה לראות את התוצאות, או שאתקן ישר?"
+```
+
+| User says | Bot does |
+|---|---|
+| "תראה" / "תבדוק" / "מה קורה" | → Phase 2 (diagnose only) |
+| "תתקן" / "תסדר" / "fix" | → Phase 3 (fix directly) |
+| "מה זה" / "תסביר" | → Show Settings Values table from this file, then ask again |
+
+### Phase 2 — Diagnose
+
+```
+BOT: "מריץ אבחון..."
+     bash scripts/fix-context-limit.sh --check
+```
+
+After the script finishes, summarize:
+
+```
+BOT: "תוצאות:
+      ✓ {N} בדיקות תקינות
+      ⚠ {N} אזהרות
+      ✗ {N} חוסמים
+
+      {list each blocker in one line}
+
+      רוצה שאתקן את מה שאפשר אוטומטית?"
+```
+
+| User says | Bot does |
+|---|---|
+| "כן" / "תתקן" | → Phase 3 |
+| "לא" / "רגע" | → Stop, wait for user |
+| Asks about a specific check | → Explain that check, then ask again |
+
+### Phase 3 — Fix
+
+```
+BOT: "מתקן — שלב 1: כותב הגדרות ל-~/.claude/settings.json (גיבוי אוטומטי)..."
+     bash scripts/fix-context-limit.sh
+```
+
+After fix completes:
+
+```
+BOT: "שלב 1 הושלם.
+      להחיל את ההגדרות גם על כל הפרויקטים שלך, לא רק על הנוכחי?"
+```
+
+| User says | Bot does |
+|---|---|
+| "כן" / "על הכל" | → Phase 4 |
+| "לא" / "רק פה" | → Phase 5 (skip global) |
+
+### Phase 4 — Propagate Globally
+
+```
+BOT: "מחיל על כל הפרויקטים..."
+     bash scripts/apply-globally.sh
+BOT: "הושלם. ההגדרות עכשיו חלות על כל פרויקט."
+```
+
+→ Phase 5
+
+### Phase 5 — Verify
+
+```
+BOT: "כדי לוודא שהתיקון עובד:
+      1. פתח טרמינל חדש
+      2. הרץ: claude
+      3. הקלד: /context
+      4. אם מתחת ל-50K טוקנים — התיקון עובד.
+
+      אם הבעיה חוזרת, הריצו:
+      bash scripts/fix-context-limit.sh --check"
+```
+
+### Phase 6 — Handling Blockers (manual action required)
+
+For each blocker type, use the matching response:
+
+| Blocker | Bot says |
+|---|---|
+| Enterprise managed-settings.json | "יש קובץ enterprise שדורס את ההגדרות. רק אדמין של הארגון יכול לשנות אותו. תפנה לאדמין עם הערכים מטבלת ההגדרות." |
+| Shell export contradicts settings | "יש export ב-{profile_file} שדורס את ההגדרות: `{line}`. צריך למחוק או לשנות את השורה הזו ידנית." |
+| DISABLE_EXPERIMENTAL_BETAS | "המשתנה CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS מונע מ-ToolSearch לעבוד. צריך להסיר אותו מהסביבה." |
+| HIPAA mode | "מצב HIPAA פעיל — חלק מהתכונות חסומות. זו הגדרה ארגונית, לא ניתן לשנות מקומית." |
+| Proxy blocking tool_reference | "ה-proxy ב-ANTHROPIC_BASE_URL צריך להעביר את השדה tool_reference בבקשות API. תפנה לצוות שמנהל את ה-proxy." |
+| BLOCKING_LIMIT_OVERRIDE set | "CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE מוגדר. זה מזיז רק את ההודעה המקומית — ה-API עדיין חוסם באותו מקום, ותקבל שגיאות קשות במקום הודעה נקייה. מומלץ להסיר." |
+| Conversation above blocking line | "השיחה הנוכחית כבר מעל קו החסימה. הקלד /clear כדי להתחיל שיחה חדשה, ואז התיקון ייכנס לפעולה." |
+
+### Conversation Rules
+
+1. **Always diagnose before fixing** — never run setup.sh without showing the user what's wrong first, unless the user explicitly says "fix" or "תתקן"
+2. **Never delete on behalf of the user** — if a fix requires removing an export or a file, tell the user exactly what to remove and where
+3. **Speak Hebrew by default** — if the user writes in Hebrew, respond in Hebrew. If in English, respond in English
+4. **Keep answers short** — one action per message, no walls of text
+5. **After every fix, always end with the verify step** (Phase 5)
+6. **If the user asks "what changed"** — show the diff between .bak and current file
+
 ## Testing (Manual)
 
 1. `bash scripts/setup.sh --check` — verify full chain runs without writing
