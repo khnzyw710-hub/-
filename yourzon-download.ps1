@@ -1,44 +1,46 @@
 <#
 .SYNOPSIS
-    YOURZON Marketing Post Downloader — Full Browser Automation (PowerShell / Windows)
+    YOURZON — Automated Marketing Post Creator & Organizer (PowerShell / Windows)
 
 .DESCRIPTION
-    Automates the complete workflow for downloading and organizing
-    marketing posts from the YOURZON platform:
+    Complete workflow:
+      1. ChatGPT Chat #1: Generate 5 marketing post texts for YOURZON
+      2. ChatGPT Chat #2: Set brand/design guidelines, then for each post —
+         paste the text and generate a branded image
+      3. Download all generated post images
+      4. Create a dated Desktop folder and organize the files
 
-    1. Launch Edge/Chrome with saved profile (persistent login)
-    2. Navigate to YOURZON platform
-    3. Scroll through the post feed
-    4. Detect user's own posts and download them (posts with Remove/↓ controls)
-    5. Create a dated Desktop folder (פוסטים יורזון יום {day} {date})
-    6. Move downloaded images into the folder
-    7. Open the folder in File Explorer
+    Modes:
+      Api        Use OpenAI API directly (default, requires OPENAI_API_KEY env var)
+      Browser    Open ChatGPT in Edge with saved profile for manual workflow
+      Organize   Just organize recently downloaded files (no generation)
 
-    Uses Selenium WebDriver for browser automation with fallback to
-    manual browsing mode.
+    Requirements (Api mode):
+      Set environment variable OPENAI_API_KEY or pass -ApiKey
 
-    Requirements:
-      Install-Module Selenium  (or download Edge WebDriver manually)
+    Requirements (Browser mode):
+      Edge or Chrome with saved ChatGPT login
 
 .EXAMPLE
-    .\yourzon-download.ps1                     # Full automation (default)
-    .\yourzon-download.ps1 -Mode Browse        # Manual browse, auto-organize
-    .\yourzon-download.ps1 -Mode Organize      # Just organize recent downloads
-    .\yourzon-download.ps1 -DryRun             # Preview without moving
-    .\yourzon-download.ps1 -Minutes 30         # Wider download detection window
-    .\yourzon-download.ps1 -Url "https://www.yourzon.com/?campaignid=..."
+    .\yourzon-download.ps1                           # Full workflow via API
+    .\yourzon-download.ps1 -Mode Api -Posts 3        # Generate 3 posts
+    .\yourzon-download.ps1 -Mode Browser             # Open ChatGPT in Edge
+    .\yourzon-download.ps1 -Mode Organize            # Just organize downloads
+    .\yourzon-download.ps1 -Mode Organize -Minutes 30
+    .\yourzon-download.ps1 -Mode Api -DryRun
 #>
 
 param(
-    [ValidateSet("Auto", "Browse", "Organize")]
-    [string]$Mode = "Auto",
+    [ValidateSet("Api", "Browser", "Organize")]
+    [string]$Mode = "Api",
 
-    [string]$Url = "",
+    [string]$ApiKey = "",
+    [int]$Posts = 5,
+    [string]$ChatModel = "gpt-4o",
+    [string]$ImageModel = "dall-e-3",
     [switch]$NoProfile,
     [switch]$DryRun,
     [int]$Minutes = 10,
-    [int]$MaxScrolls = 80,
-    [double]$ScrollPause = 1.5,
     [string]$FolderName = "",
     [string]$DownloadsDir = "",
     [string]$DesktopDir = ""
@@ -46,7 +48,6 @@ param(
 
 # --- Constants ---
 
-$YOURZON_URL = "https://www.yourzon.com"
 $ImageExtensions = @(".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg")
 
 $HebrewDays = @{
@@ -58,6 +59,75 @@ $HebrewDays = @{
     "Saturday"  = "שבת"
     "Sunday"    = "ראשון"
 }
+
+$PostsPromptTemplate = "תכתוב לי {0} פוסטים ליורזון"
+
+$BrandDesignPrompt = @"
+כל פוסט שאני נותן לך עכשיו אתה יוצר אותו בדיוק לפי זה בדיוק -
+
+Design a professional logo for a digital marketing
+company called "YourZon".
+
+LOGO STRUCTURE:
+
+- The word "YOUR" in Deep Red color
+- The word "ZON" in Dark Navy color
+- Both words use a gradient that flows from
+  Deep Red (left) to Dark Navy (right)
+- A small computer cursor/arrow icon placed
+  at the bottom-right of the letter "N"
+- The cursor is dark navy colored
+- Font: Extra Bold, Heavy Weight, Sans-Serif
+  (similar to Black Han Sans or Bebas Neue)
+- Letters are uppercase only
+- Tight letter spacing — letters sit close together
+- No outlines, no shadows, clean flat style
+
+BRAND COLORS — EXACT VALUES:
+
+- Deep Red:     #8B0000  /  RGB(139, 0, 0)
+- Dark Navy:    #1A2340  /  RGB(26, 35, 64)
+- Light Gray:   #F2F2F2  /  RGB(242, 242, 242)
+- White:        #FFFFFF
+  ⚠️ NO other colors allowed
+
+BACKGROUND OPTIONS:
+Option A — Light gray #F2F2F2 with:
+
+- Faint network/node graph pattern on LEFT side
+  (small dots connected by thin lines, deep red
+  at 10% opacity)
+- Faint topographic contour lines on RIGHT side
+  (dark navy at 8% opacity, organic curved lines)
+
+Option B — Pure white #FFFFFF, logo centered only
+
+LOGO VERSIONS NEEDED:
+
+1. Horizontal version — YOUR ZON on one line
+2. Stacked version — YOUR on top / ZON below
+3. Icon only — cursor arrow in deep red + navy gradient
+4. White version — for dark backgrounds
+
+STYLE KEYWORDS:
+Premium, Corporate, Digital, Trustworthy,
+Modern, Clean, Minimal, Bold, Professional
+
+DO NOT include:
+
+- Gradients other than red-to-navy
+- Drop shadows or 3D effects
+- Decorative fonts or script styles
+- Any colors outside the brand palette
+- Emojis or decorative symbols
+- Tagline in the logo itself
+
+OUTPUT FORMAT:
+
+- SVG vector format preferred
+- Transparent background (PNG as backup)
+- Minimum size: 2000x2000px
+"@
 
 # --- Helper Functions ---
 
@@ -123,21 +193,20 @@ function Show-Files {
     }
 }
 
-function Get-EdgeDriverPath {
-    $edgeVersion = (Get-Item "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" -ErrorAction SilentlyContinue).VersionInfo.FileVersion
-    if (-not $edgeVersion) {
-        $edgeVersion = (Get-Item "C:\Program Files\Microsoft\Edge\Application\msedge.exe" -ErrorAction SilentlyContinue).VersionInfo.FileVersion
+function Split-Posts {
+    param([string]$Text)
+    $chunks = [regex]::Split($Text, '\n\s*(?:\d+[\.\)]\s*|#{1,3}\s+פוסט\s*\d+|---+)')
+    $posts = @()
+    foreach ($c in $chunks) {
+        $trimmed = $c.Trim()
+        if ($trimmed -and $trimmed.Length -gt 20) {
+            $posts += $trimmed
+        }
     }
-    return $edgeVersion
-}
-
-function Test-SeleniumAvailable {
-    try {
-        Import-Module Selenium -ErrorAction Stop
-        return $true
-    } catch {
-        return $false
+    if ($posts.Count -eq 0 -and $Text.Trim()) {
+        $posts = @($Text.Trim())
     }
+    return $posts
 }
 
 # --- Resolve paths ---
@@ -146,7 +215,251 @@ if (-not $DesktopDir) { $DesktopDir = [Environment]::GetFolderPath("Desktop") }
 if (-not $DownloadsDir) {
     $DownloadsDir = Join-Path ([Environment]::GetFolderPath("UserProfile")) "Downloads"
 }
-if (-not $Url) { $Url = $YOURZON_URL }
+
+# --- Mode: Api (OpenAI API) ---
+
+function Invoke-Api {
+    $key = $ApiKey
+    if (-not $key) { $key = $env:OPENAI_API_KEY }
+    if (-not $key) {
+        Write-Host "Set OPENAI_API_KEY environment variable or pass -ApiKey" -ForegroundColor Red
+        return
+    }
+
+    $headers = @{
+        "Authorization" = "Bearer $key"
+        "Content-Type"  = "application/json"
+    }
+
+    $folderNameResolved = Get-DatedFolderName -Custom $FolderName
+    $folderPath = Join-Path $DesktopDir $folderNameResolved
+
+    Write-Host "=== YOURZON Post Creator ===" -ForegroundColor Cyan
+    Write-Host ""
+
+    # --- Step 1: Generate post texts ---
+    $prompt = $PostsPromptTemplate -f $Posts
+    Write-Host "Step 1: Generating $Posts post texts..." -ForegroundColor Cyan
+
+    if ($DryRun) {
+        Write-Host "  [DRY RUN] Would send to ${ChatModel}: `"$prompt`"" -ForegroundColor Yellow
+        Write-Host "  [DRY RUN] Then generate $Posts images with $ImageModel" -ForegroundColor Yellow
+        Write-Host "  [DRY RUN] Save to: $folderPath" -ForegroundColor Yellow
+        return
+    }
+
+    $chatBody = @{
+        model    = $ChatModel
+        messages = @(
+            @{ role = "user"; content = $prompt }
+        )
+    } | ConvertTo-Json -Depth 5
+
+    try {
+        $chatResponse = Invoke-RestMethod -Uri "https://api.openai.com/v1/chat/completions" `
+            -Method Post -Headers $headers -Body $chatBody
+    } catch {
+        Write-Host "API error (chat): $_" -ForegroundColor Red
+        return
+    }
+
+    $fullText = $chatResponse.choices[0].message.content
+    $postsList = Split-Posts -Text $fullText
+    if ($postsList.Count -gt $Posts) {
+        $postsList = $postsList[0..($Posts - 1)]
+    }
+
+    Write-Host "  Generated $($postsList.Count) posts:" -ForegroundColor Green
+    Write-Host ""
+    for ($i = 0; $i -lt $postsList.Count; $i++) {
+        $preview = $postsList[$i].Substring(0, [math]::Min(80, $postsList[$i].Length)).Replace("`n", " ")
+        $ellipsis = if ($postsList[$i].Length -gt 80) { "..." } else { "" }
+        Write-Host "  $($i + 1). ${preview}${ellipsis}"
+    }
+
+    # --- Step 2: Generate branded image for each post ---
+    Write-Host ""
+    Write-Host "Step 2: Generating branded images ($ImageModel)..." -ForegroundColor Cyan
+    Write-Host ""
+
+    if (-not (Test-Path $folderPath)) {
+        New-Item -ItemType Directory -Path $folderPath -Force | Out-Null
+    }
+
+    $savedFiles = @()
+
+    for ($i = 0; $i -lt $postsList.Count; $i++) {
+        $postText = $postsList[$i]
+        Write-Host "  Generating image $($i + 1)/$($postsList.Count)..." -NoNewline
+
+        $imagePrompt = "$BrandDesignPrompt`n`nהפוסט:`n$postText"
+
+        $qualityValue = if ($ImageModel -eq "dall-e-3") { "hd" } else { "auto" }
+        $imageBody = @{
+            model   = $ImageModel
+            prompt  = $imagePrompt
+            size    = "1024x1024"
+            quality = $qualityValue
+            n       = 1
+        } | ConvertTo-Json -Depth 5
+
+        try {
+            $imgResponse = Invoke-RestMethod -Uri "https://api.openai.com/v1/images/generations" `
+                -Method Post -Headers $headers -Body $imageBody
+
+            $imageUrl = $imgResponse.data[0].url
+            $filename = "yourzon_post_$($i + 1).png"
+            $filepath = Join-Path $folderPath $filename
+
+            Invoke-WebRequest -Uri $imageUrl -OutFile $filepath
+            $savedFiles += $filepath
+            Write-Host " saved: $filename" -ForegroundColor Green
+        } catch {
+            Write-Host " error: $_" -ForegroundColor Red
+        }
+    }
+
+    # --- Step 3: Summary ---
+    Write-Host ""
+    Write-Host "Step 3: Done!" -ForegroundColor Cyan
+    Write-Host "  Saved $($savedFiles.Count) post(s) to: $folderPath" -ForegroundColor Green
+    foreach ($f in $savedFiles) {
+        $sz = [math]::Round((Get-Item $f).Length / 1MB, 2)
+        Write-Host "  $(Split-Path $f -Leaf)  ($sz MB)"
+    }
+    Start-Process explorer.exe $folderPath
+    Write-Host "`nDone!" -ForegroundColor Green
+}
+
+# --- Mode: Browser (ChatGPT in Edge with saved profile) ---
+
+function Invoke-Browser {
+    $stamp = Get-Date
+
+    Write-Host "=== YOURZON Post Creator — Browser Mode ===" -ForegroundColor Cyan
+    Write-Host ""
+
+    $hasSelenium = $false
+    try {
+        Import-Module Selenium -ErrorAction Stop
+        $hasSelenium = $true
+    } catch {}
+
+    if ($hasSelenium -and -not $NoProfile) {
+        Write-Host "Launching Edge with Selenium..." -ForegroundColor Cyan
+
+        $edgeOpts = New-Object OpenQA.Selenium.Edge.EdgeOptions
+        $profileDir = Join-Path $env:LOCALAPPDATA "Microsoft\Edge\User Data"
+        if (Test-Path $profileDir) {
+            $edgeOpts.AddArgument("user-data-dir=$profileDir")
+            Write-Host "Using Edge profile: $profileDir"
+        }
+        $edgeOpts.AddArgument("--disable-blink-features=AutomationControlled")
+
+        try {
+            $driver = New-Object OpenQA.Selenium.Edge.EdgeDriver($edgeOpts)
+
+            # --- Chat #1: Generate post texts ---
+            Write-Host "`nStep 1: Opening ChatGPT for post generation..." -ForegroundColor Cyan
+            $driver.Navigate().GoToUrl("https://chatgpt.com")
+            Start-Sleep -Seconds 3
+
+            $prompt = $PostsPromptTemplate -f $Posts
+            Write-Host "  Type this prompt into ChatGPT:" -ForegroundColor Yellow
+            Write-Host "  `"$prompt`""
+
+            try {
+                $inputEl = $driver.FindElementByCssSelector('textarea, [contenteditable="true"], #prompt-textarea')
+                $inputEl.SendKeys($prompt)
+                Start-Sleep -Seconds 1
+                $inputEl.SendKeys([OpenQA.Selenium.Keys]::Return)
+                Write-Host "  Prompt sent. Waiting for response..." -ForegroundColor Green
+            } catch {
+                Write-Host "  Could not auto-type. Please type the prompt manually." -ForegroundColor Yellow
+            }
+
+            Read-Host "`n  Press Enter when Chat #1 posts are ready"
+
+            # --- Chat #2: Brand guidelines + images ---
+            Write-Host "`nStep 2: Opening new chat for image generation..." -ForegroundColor Cyan
+            Write-Host "  Pasting brand/design guidelines..." -ForegroundColor Yellow
+
+            $driver.Navigate().GoToUrl("https://chatgpt.com")
+            Start-Sleep -Seconds 3
+
+            try {
+                $inputEl2 = $driver.FindElementByCssSelector('textarea, [contenteditable="true"], #prompt-textarea')
+                $inputEl2.SendKeys($BrandDesignPrompt)
+                Start-Sleep -Seconds 1
+                $inputEl2.SendKeys([OpenQA.Selenium.Keys]::Return)
+                Write-Host "  Brand guidelines sent." -ForegroundColor Green
+            } catch {
+                Write-Host "  Could not auto-paste. Paste the brand guidelines manually." -ForegroundColor Yellow
+            }
+
+            Write-Host "`n  Now paste each post from Chat #1 into this chat, one at a time."
+            Write-Host "  ChatGPT will generate a branded image for each post."
+            Write-Host "  Download each generated image when ready."
+            Read-Host "`n  Press Enter when all images are downloaded"
+
+            try { $driver.Quit() } catch {}
+
+        } catch {
+            Write-Host "Selenium error: $_" -ForegroundColor Red
+            Write-Host "Falling back to Start-Process..." -ForegroundColor Yellow
+            Start-Process "https://chatgpt.com"
+
+            Write-Host "`n--- ChatGPT Workflow ---" -ForegroundColor Cyan
+            Write-Host "Chat #1 prompt: $($PostsPromptTemplate -f $Posts)" -ForegroundColor Yellow
+            Write-Host "`nChat #2 prompt (brand guidelines) is copied to clipboard." -ForegroundColor Yellow
+            $BrandDesignPrompt | Set-Clipboard
+            Write-Host "  (Paste it into a new ChatGPT conversation)"
+            Write-Host "`n  Then paste each post from Chat #1 into Chat #2, one at a time."
+            Write-Host "  Download each generated image."
+            Read-Host "`n  Press Enter when done"
+        }
+    } else {
+        Write-Host "Opening ChatGPT: https://chatgpt.com" -ForegroundColor Cyan
+        Start-Process "https://chatgpt.com"
+
+        Write-Host "`n--- ChatGPT Workflow ---" -ForegroundColor Cyan
+        $prompt = $PostsPromptTemplate -f $Posts
+        Write-Host "1. Chat #1 — type: `"$prompt`"" -ForegroundColor Yellow
+        Write-Host "2. Open a NEW chat"
+        Write-Host "3. Chat #2 — paste the brand guidelines (copied to clipboard)" -ForegroundColor Yellow
+        $BrandDesignPrompt | Set-Clipboard
+        Write-Host "4. Paste each post from Chat #1 into Chat #2, one at a time"
+        Write-Host "5. Download each generated image"
+        Read-Host "`nPress Enter when all images are downloaded"
+    }
+
+    # --- Organize downloads ---
+    Write-Host "`nStep 3: Organizing downloaded files..." -ForegroundColor Cyan
+    $files = Get-RecentImages -Path $DownloadsDir -Since $stamp
+    if (-not $files -or $files.Count -eq 0) {
+        $files = Get-RecentImages -Path $DownloadsDir -Since (Get-Date).AddMinutes(-30)
+    }
+    if (-not $files -or $files.Count -eq 0) {
+        Write-Host "No downloaded images found." -ForegroundColor Red
+        return
+    }
+
+    Show-Files -Files $files -Label "Downloaded"
+
+    $folderNameResolved = Get-DatedFolderName -Custom $FolderName
+    $folderPath = Join-Path $DesktopDir $folderNameResolved
+
+    if ($DryRun) {
+        Write-Host "`n[DRY RUN] Would move to: $folderPath" -ForegroundColor Yellow
+        return
+    }
+
+    $moved = Move-ToFolder -Files $files -Destination $folderPath
+    Write-Host "`nMoved $($moved.Count) file(s) to: $folderPath" -ForegroundColor Green
+    foreach ($m in $moved) { Write-Host "  $(Split-Path $m.Dest -Leaf)" }
+    Start-Process explorer.exe $folderPath
+    Write-Host "`nDone!" -ForegroundColor Green
+}
 
 # --- Mode: Organize ---
 
@@ -165,279 +478,11 @@ function Invoke-Organize {
 
     Show-Files -Files $files
 
-    $folderName = Get-DatedFolderName -Custom $FolderName
-    $folderPath = Join-Path $DesktopDir $folderName
+    $folderNameResolved = Get-DatedFolderName -Custom $FolderName
+    $folderPath = Join-Path $DesktopDir $folderNameResolved
 
     if ($DryRun) {
         Write-Host "`n[DRY RUN] Would create: $folderPath" -ForegroundColor Yellow
-        Write-Host "[DRY RUN] Would move $($files.Count) file(s)" -ForegroundColor Yellow
-        return
-    }
-
-    $moved = Move-ToFolder -Files $files -Destination $folderPath
-    Write-Host "`nMoved $($moved.Count) file(s) to: $folderPath" -ForegroundColor Green
-    foreach ($m in $moved) { Write-Host "  $(Split-Path $m.Dest -Leaf)" }
-    Start-Process explorer.exe $folderPath
-    Write-Host "`nDone!" -ForegroundColor Green
-}
-
-# --- Mode: Browse (semi-automatic) ---
-
-function Invoke-Browse {
-    $stamp = Get-Date
-
-    Write-Host "=== YOURZON Post Downloader — Browse Mode ===" -ForegroundColor Cyan
-
-    $hasSelenium = Test-SeleniumAvailable
-
-    if ($hasSelenium -and -not $NoProfile) {
-        Write-Host "Launching browser with Selenium..." -ForegroundColor Cyan
-
-        $edgeOpts = New-Object OpenQA.Selenium.Edge.EdgeOptions
-        $profileDir = Join-Path $env:LOCALAPPDATA "Microsoft\Edge\User Data"
-        if (Test-Path $profileDir) {
-            $edgeOpts.AddArgument("user-data-dir=$profileDir")
-            Write-Host "Using Edge profile: $profileDir"
-        }
-        $edgeOpts.AddArgument("--disable-blink-features=AutomationControlled")
-
-        try {
-            $driver = New-Object OpenQA.Selenium.Edge.EdgeDriver($edgeOpts)
-            $driver.Navigate().GoToUrl($Url)
-            Write-Host "`nBrowse the feed and download the posts you need." -ForegroundColor Yellow
-            Read-Host "Press Enter when done"
-            $driver.Quit()
-        } catch {
-            Write-Host "Selenium error: $_" -ForegroundColor Red
-            Write-Host "Falling back to Start-Process..." -ForegroundColor Yellow
-            Start-Process $Url
-            Read-Host "Press Enter when done downloading"
-        }
-    } else {
-        Write-Host "Opening YOURZON: $Url" -ForegroundColor Cyan
-        Start-Process $Url
-        Write-Host "`nBrowse the feed and download the posts you need." -ForegroundColor Yellow
-        Read-Host "Press Enter when done"
-    }
-
-    $files = Get-RecentImages -Path $DownloadsDir -Since $stamp
-    if (-not $files -or $files.Count -eq 0) {
-        $files = Get-RecentImages -Path $DownloadsDir -Since (Get-Date).AddMinutes(-15)
-    }
-    if (-not $files -or $files.Count -eq 0) {
-        Write-Host "No new images detected." -ForegroundColor Red
-        return
-    }
-
-    Show-Files -Files $files -Label "Detected"
-
-    $folderName = Get-DatedFolderName -Custom $FolderName
-    $folderPath = Join-Path $DesktopDir $folderName
-
-    if ($DryRun) {
-        Write-Host "`n[DRY RUN] Would move to: $folderPath" -ForegroundColor Yellow
-        return
-    }
-
-    $moved = Move-ToFolder -Files $files -Destination $folderPath
-    Write-Host "`nMoved $($moved.Count) file(s) to: $folderPath" -ForegroundColor Green
-    foreach ($m in $moved) { Write-Host "  $(Split-Path $m.Dest -Leaf)" }
-    Start-Process explorer.exe $folderPath
-    Write-Host "`nDone!" -ForegroundColor Green
-}
-
-# --- Mode: Auto (full browser automation) ---
-
-function Invoke-Auto {
-    $hasSelenium = Test-SeleniumAvailable
-
-    if (-not $hasSelenium) {
-        Write-Host "Selenium module not found." -ForegroundColor Yellow
-        Write-Host "Install with:  Install-Module Selenium" -ForegroundColor Yellow
-        Write-Host "Falling back to Browse mode...`n" -ForegroundColor Yellow
-        Invoke-Browse
-        return
-    }
-
-    $stamp = Get-Date
-    $downloadedCount = 0
-
-    Write-Host "=== YOURZON Post Downloader — Auto Mode ===" -ForegroundColor Cyan
-    Write-Host ""
-
-    # Launch Edge with profile
-    $edgeOpts = New-Object OpenQA.Selenium.Edge.EdgeOptions
-    if (-not $NoProfile) {
-        $profileDir = Join-Path $env:LOCALAPPDATA "Microsoft\Edge\User Data"
-        if (Test-Path $profileDir) {
-            $edgeOpts.AddArgument("user-data-dir=$profileDir")
-            Write-Host "Using Edge profile: $profileDir"
-        }
-    }
-    $edgeOpts.AddArgument("--disable-blink-features=AutomationControlled")
-    $edgeOpts.AddUserProfilePreference("download.default_directory", $DownloadsDir)
-
-    try {
-        $driver = New-Object OpenQA.Selenium.Edge.EdgeDriver($edgeOpts)
-    } catch {
-        Write-Host "Failed to launch Edge WebDriver: $_" -ForegroundColor Red
-        Write-Host "Falling back to Browse mode..." -ForegroundColor Yellow
-        Invoke-Browse
-        return
-    }
-
-    # Step 1 — Navigate to YOURZON
-    Write-Host "Step 1: Opening YOURZON ($Url)..." -ForegroundColor Cyan
-    $driver.Navigate().GoToUrl($Url)
-    Start-Sleep -Seconds 3
-
-    # Step 2 — Check login state
-    Write-Host "Step 2: Checking login state..." -ForegroundColor Cyan
-    $pageText = $driver.FindElementByTagName("body").Text
-    if ($pageText -match "Log in|Sign up") {
-        Write-Host "  Login required — please log in manually." -ForegroundColor Yellow
-        Write-Host "  Waiting for authentication..."
-        $loginWait = 0
-        while ($loginWait -lt 120) {
-            Start-Sleep -Seconds 3
-            $loginWait += 3
-            try {
-                $bodyText = $driver.FindElementByTagName("body").Text
-                if ($bodyText -notmatch "Log in|Sign up") {
-                    Write-Host "  Logged in!" -ForegroundColor Green
-                    break
-                }
-            } catch { break }
-        }
-    } else {
-        Write-Host "  Already authenticated." -ForegroundColor Green
-    }
-
-    # Step 3 — Scroll and download
-    Write-Host "Step 3: Scrolling through the feed..." -ForegroundColor Cyan
-
-    $ownPostSelectors = @(
-        "remove", "הסרה"
-    )
-    $downloadSelectors = @(
-        "[data-action='download']",
-        "a[download]",
-        "[aria-label*='download']",
-        "[aria-label*='הורדה']"
-    )
-
-    $prevHeight = 0
-    $staleRounds = 0
-    $clickedPositions = @{}
-
-    for ($i = 1; $i -le $MaxScrolls; $i++) {
-        # Look for post containers
-        try {
-            $articles = $driver.FindElementsByCssSelector("article, [class*='post'], [class*='card'], [role='article']")
-        } catch {
-            $articles = @()
-        }
-
-        foreach ($article in $articles) {
-            try {
-                $text = $article.Text
-            } catch { continue }
-
-            # Check if this is the user's own post
-            $isOwn = $false
-            foreach ($marker in $ownPostSelectors) {
-                if ($text -match [regex]::Escape($marker)) {
-                    $isOwn = $true
-                    break
-                }
-            }
-            if (-not $isOwn) { continue }
-
-            # Find and click download button
-            foreach ($dlSel in $downloadSelectors) {
-                try {
-                    $btns = $article.FindElementsByCssSelector($dlSel)
-                    foreach ($btn in $btns) {
-                        if (-not $btn.Displayed) { continue }
-                        $loc = $btn.Location
-                        $key = "$($loc.X),$($loc.Y)"
-                        if ($clickedPositions.ContainsKey($key)) { continue }
-                        $clickedPositions[$key] = $true
-
-                        $beforeFiles = Get-RecentImages -Path $DownloadsDir -Since $stamp
-                        $btn.Click()
-                        Start-Sleep -Seconds 3
-                        $afterFiles = Get-RecentImages -Path $DownloadsDir -Since $stamp
-
-                        if ($afterFiles.Count -gt $beforeFiles.Count) {
-                            $newest = $afterFiles[0]
-                            $downloadedCount++
-                            Write-Host "  ↓ Downloaded: $($newest.Name)" -ForegroundColor Green
-                        }
-                    }
-                } catch { continue }
-            }
-        }
-
-        # Scroll down
-        try {
-            $driver.ExecuteScript("window.scrollBy(0, window.innerHeight * 0.8)")
-        } catch { break }
-        Start-Sleep -Seconds $ScrollPause
-
-        try {
-            $curHeight = $driver.ExecuteScript("return document.documentElement.scrollHeight")
-        } catch { break }
-
-        if ($curHeight -eq $prevHeight) {
-            $staleRounds++
-            if ($staleRounds -ge 5) {
-                Write-Host "`n  Reached end of feed after $i scrolls." -ForegroundColor Cyan
-                break
-            }
-        } else {
-            $staleRounds = 0
-        }
-        $prevHeight = $curHeight
-
-        if ($i % 10 -eq 0) {
-            $progress = Get-RecentImages -Path $DownloadsDir -Since $stamp
-            Write-Host "  ... scrolled $i/$MaxScrolls, $($progress.Count) file(s) so far"
-        }
-    }
-
-    # Manual fallback if nothing was auto-detected
-    if ($downloadedCount -eq 0) {
-        $check = Get-RecentImages -Path $DownloadsDir -Since $stamp
-        if (-not $check -or $check.Count -eq 0) {
-            Write-Host "`n  No downloads detected automatically." -ForegroundColor Yellow
-            Write-Host "  Browse and download manually, then press Enter." -ForegroundColor Yellow
-            Read-Host "  Press Enter when done"
-        }
-    }
-
-    try { $driver.Quit() } catch {}
-
-    # Step 4 — Collect downloads
-    Write-Host "`nStep 4: Collecting downloads..." -ForegroundColor Cyan
-    $files = Get-RecentImages -Path $DownloadsDir -Since $stamp
-    if (-not $files -or $files.Count -eq 0) {
-        $files = Get-RecentImages -Path $DownloadsDir -Since (Get-Date).AddMinutes(-15)
-    }
-    if (-not $files -or $files.Count -eq 0) {
-        Write-Host "No downloaded images found." -ForegroundColor Red
-        return
-    }
-
-    Show-Files -Files $files -Label "Downloaded"
-
-    # Step 5 — Organize
-    Write-Host "`nStep 5: Organizing files..." -ForegroundColor Cyan
-    $folderName = Get-DatedFolderName -Custom $FolderName
-    $folderPath = Join-Path $DesktopDir $folderName
-
-    if ($DryRun) {
-        Write-Host "[DRY RUN] Would create: $folderPath" -ForegroundColor Yellow
         Write-Host "[DRY RUN] Would move $($files.Count) file(s)" -ForegroundColor Yellow
         return
     }
@@ -454,6 +499,6 @@ function Invoke-Auto {
 Write-Host ""
 switch ($Mode) {
     "Organize" { Invoke-Organize }
-    "Browse"   { Invoke-Browse }
-    "Auto"     { Invoke-Auto }
+    "Browser"  { Invoke-Browser }
+    "Api"      { Invoke-Api }
 }

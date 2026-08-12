@@ -1,107 +1,126 @@
 #!/usr/bin/env python3
 """
-YOURZON — Automated Marketing Post Downloader
+YOURZON — Automated Marketing Post Creator & Organizer
 
-Full browser automation for downloading and organizing marketing posts
-from the YOURZON platform.
-
-Workflow (mirrors the manual process):
-  1. Launch Chrome with saved profile (persistent login)
-  2. Navigate to YOURZON platform
-  3. Scroll through the post feed
-  4. Detect user's own posts and download them (posts with Remove/↓ controls)
-  5. Create a dated Desktop folder (פוסטים יורזון יום {day} {date})
-  6. Move downloaded images into the folder
-  7. Open the folder in File Explorer
+Complete workflow:
+  1. ChatGPT Chat #1: Generate 5 marketing post texts for YOURZON
+  2. ChatGPT Chat #2: Set brand/design guidelines, then for each post —
+     paste the text and generate a branded image
+  3. Download all generated post images
+  4. Create a dated Desktop folder and organize the files
 
 Modes:
-  auto       Full browser automation — scroll, detect, download, organize
-  browse     Open YOURZON for manual browsing, then auto-organize downloads
-  organize   Organize recently downloaded files only (no browser)
+  api        Use OpenAI API directly (default, requires OPENAI_API_KEY)
+  browser    Automate ChatGPT in Chrome with Playwright
+  organize   Just organize recently downloaded files (no generation)
 
-Requirements:
+Requirements (api mode):
+  pip install openai
+  export OPENAI_API_KEY="sk-..."
+
+Requirements (browser mode):
   pip install playwright
   playwright install chromium
 
 Usage:
-  python yourzon-download.py                     # Full automation (default)
-  python yourzon-download.py browse              # Manual browse, auto-organize
-  python yourzon-download.py organize            # Just organize recent downloads
-  python yourzon-download.py auto --dry-run      # Preview without moving
-  python yourzon-download.py organize -m 30      # Wider time window
-  python yourzon-download.py auto --url "https://www.yourzon.com/?campaignid=..."
+  python yourzon-download.py                        # Full workflow via API
+  python yourzon-download.py api --posts 3          # Generate 3 posts
+  python yourzon-download.py browser                # Automate ChatGPT in Chrome
+  python yourzon-download.py organize               # Just organize downloads
+  python yourzon-download.py organize -m 30         # Wider time window
+  python yourzon-download.py api --dry-run          # Preview prompts only
 """
 
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-
-YOURZON_URL = "https://www.yourzon.com"
+from urllib.request import urlretrieve
 
 HEBREW_DAYS = {
-    0: "שני",
-    1: "שלישי",
-    2: "רביעי",
-    3: "חמישי",
-    4: "שישי",
-    5: "שבת",
-    6: "ראשון",
+    0: "שני", 1: "שלישי", 2: "רביעי", 3: "חמישי",
+    4: "שישי", 5: "שבת", 6: "ראשון",
 }
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"}
 
-CONFIG_PATH = Path.home() / ".yourzon-downloader.json"
+POSTS_PROMPT = "תכתוב לי {n} פוסטים ליורזון"
 
-DEFAULT_CONFIG = {
-    "yourzon_url": YOURZON_URL,
-    "scroll_pause_sec": 1.5,
-    "max_scrolls": 80,
-    "download_wait_sec": 5,
-    "selectors": {
-        "own_post_markers": [
-            "text=Remove",
-            "text=הסרה",
-            "[data-action='remove']",
-        ],
-        "download_triggers": [
-            "[data-action='download']",
-            "a[download]",
-            "[aria-label*='download']",
-            "[aria-label*='הורדה']",
-            "button:has-text('↓')",
-        ],
-        "post_blocks": [
-            "article",
-            "[class*='post']",
-            "[class*='card']",
-            "[role='article']",
-        ],
-    },
-}
+BRAND_DESIGN_PROMPT = """\
+כל פוסט שאני נותן לך עכשיו אתה יוצר אותו בדיוק לפי זה בדיוק -
+
+Design a professional logo for a digital marketing
+company called "YourZon".
+
+LOGO STRUCTURE:
+
+- The word "YOUR" in Deep Red color
+- The word "ZON" in Dark Navy color
+- Both words use a gradient that flows from
+  Deep Red (left) to Dark Navy (right)
+- A small computer cursor/arrow icon placed
+  at the bottom-right of the letter "N"
+- The cursor is dark navy colored
+- Font: Extra Bold, Heavy Weight, Sans-Serif
+  (similar to Black Han Sans or Bebas Neue)
+- Letters are uppercase only
+- Tight letter spacing — letters sit close together
+- No outlines, no shadows, clean flat style
+
+BRAND COLORS — EXACT VALUES:
+
+- Deep Red:     #8B0000  /  RGB(139, 0, 0)
+- Dark Navy:    #1A2340  /  RGB(26, 35, 64)
+- Light Gray:   #F2F2F2  /  RGB(242, 242, 242)
+- White:        #FFFFFF
+  ⚠️ NO other colors allowed
+
+BACKGROUND OPTIONS:
+Option A — Light gray #F2F2F2 with:
+
+- Faint network/node graph pattern on LEFT side
+  (small dots connected by thin lines, deep red
+  at 10% opacity)
+- Faint topographic contour lines on RIGHT side
+  (dark navy at 8% opacity, organic curved lines)
+
+Option B — Pure white #FFFFFF, logo centered only
+
+LOGO VERSIONS NEEDED:
+
+1. Horizontal version — YOUR ZON on one line
+2. Stacked version — YOUR on top / ZON below
+3. Icon only — cursor arrow in deep red + navy gradient
+4. White version — for dark backgrounds
+
+STYLE KEYWORDS:
+Premium, Corporate, Digital, Trustworthy,
+Modern, Clean, Minimal, Bold, Professional
+
+DO NOT include:
+
+- Gradients other than red-to-navy
+- Drop shadows or 3D effects
+- Decorative fonts or script styles
+- Any colors outside the brand palette
+- Emojis or decorative symbols
+- Tagline in the logo itself
+
+OUTPUT FORMAT:
+
+- SVG vector format preferred
+- Transparent background (PNG as backup)
+- Minimum size: 2000x2000px"""
 
 
-def load_config():
-    config = DEFAULT_CONFIG.copy()
-    if CONFIG_PATH.exists():
-        try:
-            with open(CONFIG_PATH, encoding="utf-8") as f:
-                user = json.load(f)
-            config.update(user)
-        except (json.JSONDecodeError, OSError):
-            pass
-    return config
-
-
-def save_default_config():
-    if not CONFIG_PATH.exists():
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(DEFAULT_CONFIG, f, indent=2, ensure_ascii=False)
-
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def get_desktop() -> Path:
     desktop = Path.home() / "Desktop"
@@ -176,31 +195,262 @@ def open_folder(path):
         os.system(f'xdg-open "{path}" 2>/dev/null &')
 
 
-def print_files(files, label="Found"):
-    total = sum(f.stat().st_size for f in files)
-    print(f"\n{label} {len(files)} image(s) ({total / 1048576:.2f} MB):")
-    for f in files:
-        sz = f.stat().st_size / 1048576
-        ts = datetime.fromtimestamp(f.stat().st_mtime).strftime("%H:%M:%S")
-        print(f"  {f.name}  ({sz:.2f} MB, {ts})")
+def parse_posts(text):
+    """Split ChatGPT response into individual posts."""
+    chunks = re.split(r'\n\s*(?:\d+[\.\)]\s*|#{1,3}\s+פוסט\s*\d+|---+)', text)
+    posts = [c.strip() for c in chunks if c.strip() and len(c.strip()) > 20]
+    if not posts:
+        posts = [text.strip()]
+    return posts
 
 
-def organize_files(files, desktop_dir, folder_name, dry_run=False):
-    folder = desktop_dir / folder_name
-    if dry_run:
-        print(f"\n[DRY RUN] Would create folder: {folder}")
-        print(f"[DRY RUN] Would move {len(files)} file(s)")
+# ---------------------------------------------------------------------------
+# API mode — OpenAI API directly
+# ---------------------------------------------------------------------------
+
+def cmd_api(args):
+    try:
+        from openai import OpenAI
+    except ImportError:
+        print("openai package required:  pip install openai")
+        sys.exit(1)
+
+    api_key = args.api_key or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("Set OPENAI_API_KEY or pass --api-key")
+        sys.exit(1)
+
+    client = OpenAI(api_key=api_key)
+    desktop = Path(args.desktop_dir) if args.desktop_dir else get_desktop()
+    folder_name = dated_folder_name(args.folder_name)
+    folder = desktop / folder_name
+    num_posts = args.posts
+    chat_model = args.chat_model
+    image_model = args.image_model
+
+    print("=== YOURZON Post Creator ===\n")
+
+    # --- Step 1: Generate post texts (Chat #1) ---
+    print(f"Step 1: Generating {num_posts} post texts...")
+    prompt = POSTS_PROMPT.format(n=num_posts)
+
+    if args.dry_run:
+        print(f"  [DRY RUN] Would send to {chat_model}: \"{prompt}\"")
+        print(f"  [DRY RUN] Then generate {num_posts} images with {image_model}")
+        print(f"  [DRY RUN] Save to: {folder}")
         return
-    moved = move_files(files, folder)
-    print(f"\nMoved {len(moved)} file(s) to: {folder}")
-    for src, dst in moved:
-        print(f"  {dst.name}")
+
+    response = client.chat.completions.create(
+        model=chat_model,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    full_text = response.choices[0].message.content
+    posts = parse_posts(full_text)[:num_posts]
+
+    print(f"  Generated {len(posts)} posts:\n")
+    for i, p in enumerate(posts, 1):
+        preview = p[:80].replace("\n", " ")
+        print(f"  {i}. {preview}{'...' if len(p) > 80 else ''}")
+
+    # --- Step 2: Generate branded image for each post (Chat #2) ---
+    print(f"\nStep 2: Generating branded images ({image_model})...\n")
+
+    folder.mkdir(parents=True, exist_ok=True)
+    saved_files = []
+
+    for i, post_text in enumerate(posts, 1):
+        print(f"  Generating image {i}/{len(posts)}...", end=" ", flush=True)
+
+        image_prompt = f"{BRAND_DESIGN_PROMPT}\n\nהפוסט:\n{post_text}"
+
+        try:
+            img_response = client.images.generate(
+                model=image_model,
+                prompt=image_prompt,
+                size="1024x1024",
+                quality="hd" if image_model == "dall-e-3" else "auto",
+                n=1,
+            )
+
+            image_url = img_response.data[0].url
+            filename = f"yourzon_post_{i}.png"
+            filepath = folder / filename
+            urlretrieve(image_url, str(filepath))
+            saved_files.append(filepath)
+            print(f"saved: {filename}")
+
+        except Exception as e:
+            print(f"error: {e}")
+            continue
+
+    # --- Step 3: Summary ---
+    print(f"\nStep 3: Done!")
+    print(f"  Saved {len(saved_files)} post(s) to: {folder}")
+    for f in saved_files:
+        sz = f.stat().st_size / 1048576
+        print(f"  {f.name}  ({sz:.2f} MB)")
+
     open_folder(folder)
     print("\nDone!")
 
 
 # ---------------------------------------------------------------------------
-# Mode: organize — just move recent downloads to a dated folder
+# Browser mode — automate ChatGPT in Chrome via Playwright
+# ---------------------------------------------------------------------------
+
+def cmd_browser(args):
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print("Playwright required:  pip install playwright && playwright install chromium")
+        sys.exit(1)
+
+    downloads_dir = Path(args.downloads_dir) if args.downloads_dir else get_downloads()
+    desktop = Path(args.desktop_dir) if args.desktop_dir else get_desktop()
+    num_posts = args.posts
+    stamp = time.time()
+
+    print("=== YOURZON Post Creator — Browser Mode ===\n")
+
+    with sync_playwright() as pw:
+        profile = chrome_profile_dir()
+        use_profile = profile.exists() and not args.no_profile
+
+        if use_profile:
+            print(f"Using Chrome profile: {profile}")
+            ctx = pw.chromium.launch_persistent_context(
+                str(profile),
+                channel="chrome",
+                headless=False,
+                accept_downloads=True,
+                viewport={"width": 1280, "height": 900},
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        else:
+            browser = pw.chromium.launch(channel="chrome", headless=False)
+            ctx = browser.new_context(accept_downloads=True)
+            page = ctx.new_page()
+
+        # --- Chat #1: Generate post texts ---
+        print("Step 1: Opening ChatGPT for post generation...")
+        page.goto("https://chatgpt.com", wait_until="domcontentloaded", timeout=30_000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=15_000)
+        except Exception:
+            pass
+
+        prompt_text = POSTS_PROMPT.format(n=num_posts)
+        print(f"  Prompt: \"{prompt_text}\"")
+
+        # Try to find and fill the chat input
+        input_sel = 'textarea, [contenteditable="true"], #prompt-textarea, div[role="textbox"]'
+        try:
+            chat_input = page.locator(input_sel).first
+            chat_input.wait_for(state="visible", timeout=30_000)
+            chat_input.fill(prompt_text)
+            time.sleep(0.5)
+
+            # Submit
+            send_btn = page.locator('button[data-testid="send-button"], button[aria-label="Send"], button:has-text("Send")').first
+            if send_btn.is_visible(timeout=3_000):
+                send_btn.click()
+            else:
+                page.keyboard.press("Enter")
+
+            print("  Prompt sent. Waiting for response...")
+            time.sleep(5)
+
+            # Wait for response to complete (stop button disappears)
+            for _ in range(60):
+                stop_btn = page.locator('button[aria-label="Stop"], button:has-text("Stop")')
+                if stop_btn.count() == 0 or not stop_btn.first.is_visible():
+                    break
+                time.sleep(2)
+
+            print("  Response received.")
+            print("\n  Now copy the posts from Chat #1.")
+
+        except Exception as e:
+            print(f"  Could not auto-type. Please type the prompt manually: \"{prompt_text}\"")
+
+        input("\n  Press Enter when Chat #1 posts are ready...")
+
+        # --- Chat #2: Brand guidelines + generate images ---
+        print("\nStep 2: Opening new chat for image generation...")
+        print("  Pasting brand/design guidelines...\n")
+
+        # Open new chat
+        try:
+            new_chat_btn = page.locator('a[href="/"], button:has-text("New chat"), nav a:first-child').first
+            if new_chat_btn.is_visible(timeout=5_000):
+                new_chat_btn.click()
+                time.sleep(2)
+        except Exception:
+            page.goto("https://chatgpt.com", wait_until="domcontentloaded", timeout=30_000)
+            time.sleep(3)
+
+        # Send brand guidelines
+        try:
+            chat_input = page.locator(input_sel).first
+            chat_input.wait_for(state="visible", timeout=15_000)
+            chat_input.fill(BRAND_DESIGN_PROMPT)
+            time.sleep(0.5)
+
+            send_btn = page.locator('button[data-testid="send-button"], button[aria-label="Send"]').first
+            if send_btn.is_visible(timeout=3_000):
+                send_btn.click()
+            else:
+                page.keyboard.press("Enter")
+
+            print("  Brand guidelines sent.")
+            time.sleep(5)
+
+            for _ in range(30):
+                stop_btn = page.locator('button[aria-label="Stop"], button:has-text("Stop")')
+                if stop_btn.count() == 0 or not stop_btn.first.is_visible():
+                    break
+                time.sleep(2)
+
+        except Exception:
+            print("  Could not auto-paste. Please paste the brand guidelines manually.")
+
+        print("\n  Now paste each post from Chat #1 into this chat, one at a time.")
+        print("  ChatGPT will generate a branded image for each post.")
+        print("  Download each generated image when ready.")
+        input("\n  Press Enter when all images are downloaded...")
+
+        ctx.close()
+        if not use_profile:
+            browser.close()
+
+    # --- Organize downloaded files ---
+    print("\nStep 3: Organizing downloaded files...")
+    files = find_recent_images(downloads_dir, since_ts=stamp)
+    if not files:
+        files = find_recent_images(downloads_dir, minutes=30)
+
+    if not files:
+        print("No downloaded images found.")
+        return
+
+    folder_name = dated_folder_name(args.folder_name)
+    folder = desktop / folder_name
+
+    if args.dry_run:
+        print(f"  [DRY RUN] Would move {len(files)} file(s) to: {folder}")
+        return
+
+    moved = move_files(files, folder)
+    print(f"  Moved {len(moved)} file(s) to: {folder}")
+    for _, dst in moved:
+        print(f"    {dst.name}")
+    open_folder(folder)
+    print("\nDone!")
+
+
+# ---------------------------------------------------------------------------
+# Organize mode — just move recent downloads
 # ---------------------------------------------------------------------------
 
 def cmd_organize(args):
@@ -213,297 +463,30 @@ def cmd_organize(args):
     files = find_recent_images(downloads, minutes=args.minutes)
     if not files:
         print("No recent image files found.")
-        print(f"Tip: try a wider window with  -m {args.minutes * 3}")
+        print(f"Tip: try  -m {args.minutes * 3}")
         return
 
-    print_files(files)
-    organize_files(files, desktop, dated_folder_name(args.folder_name), args.dry_run)
+    total = sum(f.stat().st_size for f in files)
+    print(f"\nFound {len(files)} image(s) ({total / 1048576:.2f} MB):")
+    for f in files:
+        sz = f.stat().st_size / 1048576
+        ts = datetime.fromtimestamp(f.stat().st_mtime).strftime("%H:%M:%S")
+        print(f"  {f.name}  ({sz:.2f} MB, {ts})")
 
+    folder_name = dated_folder_name(args.folder_name)
+    folder = desktop / folder_name
 
-# ---------------------------------------------------------------------------
-# Mode: browse — open YOURZON, let user download manually, then organize
-# ---------------------------------------------------------------------------
-
-def cmd_browse(args):
-    downloads = Path(args.downloads_dir) if args.downloads_dir else get_downloads()
-    desktop = Path(args.desktop_dir) if args.desktop_dir else get_desktop()
-    config = load_config()
-    url = args.url or config["yourzon_url"]
-
-    stamp = time.time()
-
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        import webbrowser
-        print(f"Opening YOURZON: {url}")
-        webbrowser.open(url)
-        input("\nDownload the posts you need, then press Enter...")
-        files = find_recent_images(downloads, since_ts=stamp)
-        if not files:
-            files = find_recent_images(downloads, minutes=15)
-        if not files:
-            print("No new images found.")
-            return
-        print_files(files, "Detected")
-        organize_files(files, desktop, dated_folder_name(args.folder_name), args.dry_run)
+    if args.dry_run:
+        print(f"\n[DRY RUN] Would create: {folder}")
+        print(f"[DRY RUN] Would move {len(files)} file(s)")
         return
 
-    with sync_playwright() as pw:
-        profile = chrome_profile_dir()
-        use_profile = profile.exists() and not args.no_profile
-
-        print("=== YOURZON Post Downloader — Browse Mode ===\n")
-
-        if use_profile:
-            print(f"Using Chrome profile: {profile}")
-            ctx = pw.chromium.launch_persistent_context(
-                str(profile),
-                channel="chrome",
-                headless=False,
-                accept_downloads=True,
-                viewport={"width": 1280, "height": 900},
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        else:
-            browser = pw.chromium.launch(channel="chrome", headless=False)
-            ctx = browser.new_context(
-                accept_downloads=True,
-                viewport={"width": 1280, "height": 900},
-            )
-            page = ctx.new_page()
-
-        print(f"Navigating to {url} ...")
-        page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-
-        try:
-            page.wait_for_load_state("networkidle", timeout=15_000)
-        except Exception:
-            pass
-
-        print("\nBrowse the feed and download the posts you need.")
-        input("Press Enter when you're done downloading...")
-
-        ctx.close()
-        if not use_profile:
-            browser.close()
-
-    files = find_recent_images(downloads, since_ts=stamp)
-    if not files:
-        files = find_recent_images(downloads, minutes=15)
-    if not files:
-        print("No new images detected.")
-        return
-
-    print_files(files, "Detected")
-    organize_files(files, desktop, dated_folder_name(args.folder_name), args.dry_run)
-
-
-# ---------------------------------------------------------------------------
-# Mode: auto — full browser automation
-# ---------------------------------------------------------------------------
-
-def cmd_auto(args):
-    try:
-        from playwright.sync_api import sync_playwright
-        from playwright.sync_api import TimeoutError as PwTimeout
-    except ImportError:
-        print("Playwright is required for auto mode.")
-        print("  pip install playwright && playwright install chromium")
-        print("\nFalling back to browse mode...")
-        cmd_browse(args)
-        return
-
-    downloads_dir = Path(args.downloads_dir) if args.downloads_dir else get_downloads()
-    desktop_dir = Path(args.desktop_dir) if args.desktop_dir else get_desktop()
-    config = load_config()
-    save_default_config()
-    url = args.url or config["yourzon_url"]
-    selectors = config["selectors"]
-
-    stamp = time.time()
-    downloaded_count = 0
-
-    print("=== YOURZON Post Downloader — Auto Mode ===\n")
-
-    with sync_playwright() as pw:
-        profile = chrome_profile_dir()
-        use_profile = profile.exists() and not args.no_profile
-
-        if use_profile:
-            print(f"Using Chrome profile: {profile}")
-            ctx = pw.chromium.launch_persistent_context(
-                str(profile),
-                channel="chrome",
-                headless=False,
-                accept_downloads=True,
-                viewport={"width": 1280, "height": 900},
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        else:
-            browser = pw.chromium.launch(channel="chrome", headless=False)
-            ctx = browser.new_context(
-                accept_downloads=True,
-                viewport={"width": 1280, "height": 900},
-            )
-            page = ctx.new_page()
-
-        # Step 1 — Navigate to YOURZON
-        print(f"Step 1: Opening YOURZON ({url})...")
-        page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-        try:
-            page.wait_for_load_state("networkidle", timeout=15_000)
-        except Exception:
-            pass
-
-        # Step 2 — Handle login if needed
-        print("Step 2: Checking login state...")
-        try:
-            login_visible = page.locator("text=Log in").or_(
-                page.locator("text=Sign up")
-            ).first.is_visible(timeout=3_000)
-        except Exception:
-            login_visible = False
-
-        if login_visible:
-            print("  Login page detected — please log in manually.")
-            print("  Waiting for authentication...")
-            try:
-                page.wait_for_function(
-                    """() => !document.body.innerText.includes('Log in')
-                          || !document.body.innerText.includes('Sign up')""",
-                    timeout=120_000,
-                )
-            except PwTimeout:
-                print("  Login timeout — continuing anyway.")
-            try:
-                page.wait_for_load_state("networkidle", timeout=10_000)
-            except Exception:
-                pass
-            print("  Logged in.")
-        else:
-            print("  Already authenticated.")
-
-        # Step 3 — Scroll and download
-        print("Step 3: Scrolling through the feed and downloading posts...\n")
-
-        max_scrolls = config.get("max_scrolls", 80)
-        pause = config.get("scroll_pause_sec", 1.5)
-        dl_wait = config.get("download_wait_sec", 5)
-        prev_height = 0
-        stale_rounds = 0
-        clicked_set = set()
-
-        for scroll_i in range(1, max_scrolls + 1):
-            # Find post containers on the visible page
-            for sel in selectors["post_blocks"]:
-                try:
-                    posts = page.locator(sel)
-                    if posts.count() == 0:
-                        continue
-
-                    for pi in range(posts.count()):
-                        post = posts.nth(pi)
-                        if not post.is_visible():
-                            continue
-
-                        # Check if this is the user's own post (has Remove control)
-                        is_own = False
-                        for marker_sel in selectors["own_post_markers"]:
-                            try:
-                                if post.locator(marker_sel).count() > 0:
-                                    is_own = True
-                                    break
-                            except Exception:
-                                continue
-
-                        if not is_own:
-                            continue
-
-                        # Look for the download button inside this post
-                        for dl_sel in selectors["download_triggers"]:
-                            try:
-                                dl_btns = post.locator(dl_sel)
-                                for bi in range(dl_btns.count()):
-                                    btn = dl_btns.nth(bi)
-                                    if not btn.is_visible():
-                                        continue
-
-                                    bbox = btn.bounding_box()
-                                    if not bbox:
-                                        continue
-                                    key = (round(bbox["x"]), round(bbox["y"]))
-                                    if key in clicked_set:
-                                        continue
-                                    clicked_set.add(key)
-
-                                    try:
-                                        with page.expect_download(timeout=dl_wait * 1000) as dl_info:
-                                            btn.click()
-                                        dl = dl_info.value
-                                        save_to = downloads_dir / dl.suggested_filename
-                                        dl.save_as(str(save_to))
-                                        downloaded_count += 1
-                                        print(f"  ↓ Downloaded: {dl.suggested_filename}")
-                                    except PwTimeout:
-                                        btn.click()
-                                        time.sleep(2)
-                                        new = find_recent_images(downloads_dir, since_ts=stamp)
-                                        if len(new) > downloaded_count:
-                                            downloaded_count = len(new)
-                                            print(f"  ↓ Downloaded (via browser): {new[0].name}")
-                            except Exception:
-                                continue
-                except Exception:
-                    continue
-
-            # Scroll down one viewport
-            page.evaluate("window.scrollBy(0, window.innerHeight * 0.8)")
-            time.sleep(pause)
-
-            cur_height = page.evaluate("document.documentElement.scrollHeight")
-            if cur_height == prev_height:
-                stale_rounds += 1
-                if stale_rounds >= 5:
-                    print(f"\n  Reached end of feed after {scroll_i} scrolls.")
-                    break
-            else:
-                stale_rounds = 0
-            prev_height = cur_height
-
-            if scroll_i % 10 == 0:
-                progress = find_recent_images(downloads_dir, since_ts=stamp)
-                print(f"  ... scrolled {scroll_i}/{max_scrolls}, {len(progress)} file(s) so far")
-
-        # If nothing was auto-detected, offer manual fallback
-        if downloaded_count == 0:
-            check = find_recent_images(downloads_dir, since_ts=stamp)
-            if not check:
-                print("\n  No downloads detected automatically.")
-                print("  The feed selectors may need tuning — check ~/.yourzon-downloader.json")
-                print("  Switching to manual mode: browse and download, then press Enter.")
-                input("  Press Enter when done...")
-
-        ctx.close()
-        if not use_profile:
-            browser.close()
-
-    # Step 4 — Collect downloaded files
-    print("\nStep 4: Collecting downloads...")
-    files = find_recent_images(downloads_dir, since_ts=stamp)
-    if not files:
-        files = find_recent_images(downloads_dir, minutes=15)
-    if not files:
-        print("No downloaded images found.")
-        return
-
-    print_files(files, "Downloaded")
-
-    # Step 5 — Organize into dated folder
-    print(f"\nStep 5: Organizing files...")
-    organize_files(files, desktop_dir, dated_folder_name(args.folder_name), args.dry_run)
+    moved = move_files(files, folder)
+    print(f"\nMoved {len(moved)} file(s) to: {folder}")
+    for _, dst in moved:
+        print(f"  {dst.name}")
+    open_folder(folder)
+    print("\nDone!")
 
 
 # ---------------------------------------------------------------------------
@@ -512,67 +495,62 @@ def cmd_auto(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="YOURZON Marketing Post Downloader — Full Browser Automation",
+        description="YOURZON — Automated Marketing Post Creator & Organizer",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""Examples:
-  %(prog)s                           Full auto: scroll, download, organize
-  %(prog)s browse                    Open YOURZON, browse manually, auto-organize
-  %(prog)s organize                  Just organize recent downloads
-  %(prog)s auto --url "https://..."  Full auto with custom YOURZON URL
-  %(prog)s auto --dry-run            Preview without moving files
-  %(prog)s organize -m 30            Widen time window to 30 minutes
-
-Config: ~/.yourzon-downloader.json (auto-created on first run)
-  Customize CSS selectors for post detection and download buttons.
+        epilog="""\
+Examples:
+  %(prog)s                              Full workflow via OpenAI API
+  %(prog)s api --posts 3                Generate 3 posts
+  %(prog)s browser                      Automate ChatGPT in Chrome
+  %(prog)s organize                     Just organize recent downloads
+  %(prog)s organize -m 30               Wider time window
+  %(prog)s api --dry-run                Preview prompts without generating
 """,
     )
 
     sub = parser.add_subparsers(dest="mode")
 
-    # --- auto ---
-    p_auto = sub.add_parser("auto", help="Full browser automation (default)")
-    p_auto.add_argument("--url", help="YOURZON URL (overrides config)")
-    p_auto.add_argument("--no-profile", action="store_true",
-                        help="Don't use saved Chrome profile (fresh session)")
-    p_auto.add_argument("--folder-name", help="Custom destination folder name")
-    p_auto.add_argument("--downloads-dir", help="Custom downloads directory")
-    p_auto.add_argument("--desktop-dir", help="Custom desktop directory")
-    p_auto.add_argument("--dry-run", action="store_true",
-                        help="Preview without moving files")
+    # --- api mode ---
+    p_api = sub.add_parser("api", help="Use OpenAI API directly (default)")
+    p_api.add_argument("--api-key", help="OpenAI API key (or set OPENAI_API_KEY)")
+    p_api.add_argument("--posts", type=int, default=5, help="Number of posts (default: 5)")
+    p_api.add_argument("--chat-model", default="gpt-4o", help="Model for text generation (default: gpt-4o)")
+    p_api.add_argument("--image-model", default="dall-e-3", help="Model for image generation (default: dall-e-3)")
+    p_api.add_argument("--folder-name", help="Custom folder name")
+    p_api.add_argument("--desktop-dir", help="Custom desktop path")
+    p_api.add_argument("--dry-run", action="store_true")
 
-    # --- browse ---
-    p_browse = sub.add_parser("browse",
-                              help="Open YOURZON for manual browsing, then organize")
-    p_browse.add_argument("--url", help="YOURZON URL")
-    p_browse.add_argument("--no-profile", action="store_true")
-    p_browse.add_argument("--folder-name", help="Custom folder name")
-    p_browse.add_argument("--downloads-dir")
-    p_browse.add_argument("--desktop-dir")
-    p_browse.add_argument("--dry-run", action="store_true")
+    # --- browser mode ---
+    p_br = sub.add_parser("browser", help="Automate ChatGPT in Chrome browser")
+    p_br.add_argument("--no-profile", action="store_true", help="Fresh browser session")
+    p_br.add_argument("--posts", type=int, default=5, help="Number of posts (default: 5)")
+    p_br.add_argument("--folder-name", help="Custom folder name")
+    p_br.add_argument("--downloads-dir", help="Custom downloads path")
+    p_br.add_argument("--desktop-dir", help="Custom desktop path")
+    p_br.add_argument("--dry-run", action="store_true")
 
-    # --- organize ---
-    p_org = sub.add_parser("organize",
-                           help="Organize recently downloaded files (no browser)")
-    p_org.add_argument("-m", "--minutes", type=int, default=10,
-                       help="Time window in minutes (default: 10)")
+    # --- organize mode ---
+    p_org = sub.add_parser("organize", help="Organize recently downloaded files only")
+    p_org.add_argument("-m", "--minutes", type=int, default=10, help="Time window (default: 10)")
     p_org.add_argument("--folder-name", help="Custom folder name")
-    p_org.add_argument("--downloads-dir")
-    p_org.add_argument("--desktop-dir")
+    p_org.add_argument("--downloads-dir", help="Custom downloads path")
+    p_org.add_argument("--desktop-dir", help="Custom desktop path")
     p_org.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args()
 
-    if args.mode is None or args.mode == "auto":
-        if not hasattr(args, "url"):
-            args.url = None
-            args.no_profile = False
+    if args.mode is None or args.mode == "api":
+        if not hasattr(args, "api_key"):
+            args.api_key = None
+            args.posts = 5
+            args.chat_model = "gpt-4o"
+            args.image_model = "dall-e-3"
             args.folder_name = None
-            args.downloads_dir = None
             args.desktop_dir = None
             args.dry_run = False
-        cmd_auto(args)
-    elif args.mode == "browse":
-        cmd_browse(args)
+        cmd_api(args)
+    elif args.mode == "browser":
+        cmd_browser(args)
     elif args.mode == "organize":
         cmd_organize(args)
 
