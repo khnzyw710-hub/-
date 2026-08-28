@@ -30,6 +30,27 @@ curl -fsSL https://raw.githubusercontent.com/khnzyw710-hub/-/claude/claude-code-
 
 אחרי ההרצה: **לסגור את כל חלונות הטרמינל הפתוחים**, לפתוח חלון חדש, ולהריץ `claude`.
 
+### 🪟 Windows (PowerShell)
+
+ב-PowerShell הפקודה `curl` היא בכלל כינוי ל-`Invoke-WebRequest`, ולכן פקודת ה-`curl -fsSL`
+שלמעלה נכשלת שם עם `A parameter cannot be found that matches parameter name 'fsSL'`.
+ל-Windows יש סקריפט ייעודי — [`restore-terminals.ps1`](.claude/restore-terminals.ps1) —
+שעושה את אותו ביטול (settings.json, ‏`.claude.json` פגום, בלוק הפרופיל של Git Bash)
+וגם מסיר את משתני הסביבה ברמת המשתמש של Windows. פקודת הדבקה אחת ב-PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/khnzyw710-hub/-/claude/claude-code-terminals-b7wh24/.claude/restore-terminals.ps1 | iex
+```
+
+לבדיקה בלבד בלי לשנות כלום, או לשמירת כוונון הדחיסה — מציבים משתנה לפני הפקודה באותה שורה:
+
+```powershell
+$Check = $true; irm https://raw.githubusercontent.com/khnzyw710-hub/-/claude/claude-code-terminals-b7wh24/.claude/restore-terminals.ps1 | iex
+$KeepCompact = $true; irm https://raw.githubusercontent.com/khnzyw710-hub/-/claude/claude-code-terminals-b7wh24/.claude/restore-terminals.ps1 | iex
+```
+
+גם כאן: אחרי ההרצה לסגור **את כל** חלונות הטרמינל/PowerShell ולפתוח מחדש מקיצור הדרך.
+
 מי שרוצה לשמור את כוונון הדחיסה (שאינו חשוד בקריסה) ולהסיר רק את
 `ENABLE_TOOL_SEARCH` — החשוד המרכזי — מריץ עם `--keep-compact`.
 לבדיקה בלבד בלי לשנות כלום: `--check`.
