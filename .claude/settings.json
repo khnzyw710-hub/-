@@ -4,7 +4,6 @@
   "autoCompactEnabled": true,
   "env": {
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "120000",
-    "MAX_MCP_OUTPUT_TOKENS": "10000",
-    "ENABLE_TOOL_SEARCH": "true"
+    "MAX_MCP_OUTPUT_TOKENS": "10000"
   }
 }
