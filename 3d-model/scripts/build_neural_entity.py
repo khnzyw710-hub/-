@@ -139,8 +139,8 @@ def metaball_to_clean_mesh(mball_obj):
     bpy.ops.object.modifier_apply(modifier=sm2.name)
 
     sub = mesh_obj.modifiers.new("Subsurf", 'SUBSURF')
-    sub.levels = 3
-    sub.render_levels = 3
+    sub.levels = 2
+    sub.render_levels = 2
     bpy.ops.object.modifier_apply(modifier=sub.name)
 
     bpy.ops.object.shade_smooth()
@@ -161,7 +161,7 @@ def sample_surface_points(mesh_obj, target_count=650):
     dec = dup.modifiers.new("Decimate", 'DECIMATE')
     verts_now = len(dup.data.vertices)
     ratio = min(1.0, target_count / max(verts_now, 1))
-    dec.ratio = max(ratio, 0.01)
+    dec.ratio = max(ratio, 0.0005)
     bpy.ops.object.select_all(action='DESELECT')
     dup.select_set(True)
     bpy.context.view_layer.objects.active = dup
