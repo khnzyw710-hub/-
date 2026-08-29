@@ -134,13 +134,13 @@ def metaball_to_clean_mesh(mball_obj):
     bpy.ops.object.modifier_apply(modifier=sm.name)
 
     sm2 = mesh_obj.modifiers.new("CorrectiveSmooth", 'CORRECTIVE_SMOOTH')
-    sm2.iterations = 6
-    sm2.factor = 0.6
+    sm2.iterations = 10
+    sm2.factor = 0.7
     bpy.ops.object.modifier_apply(modifier=sm2.name)
 
     sub = mesh_obj.modifiers.new("Subsurf", 'SUBSURF')
-    sub.levels = 2
-    sub.render_levels = 2
+    sub.levels = 3
+    sub.render_levels = 3
     bpy.ops.object.modifier_apply(modifier=sub.name)
 
     bpy.ops.object.shade_smooth()
@@ -150,7 +150,10 @@ def metaball_to_clean_mesh(mball_obj):
 # ---------------------------------------------------------------------------
 # glowing neural network overlay (nodes + tapered struts via Skin modifier)
 # ---------------------------------------------------------------------------
-def sample_surface_points(mesh_obj, target_count=1400):
+def sample_surface_points(mesh_obj, target_count=650):
+    """Decimate a copy of the body mesh and return its vertices/normals
+    *and* its own topological edges, so the network we build from them
+    always runs along the surface and never cuts through the body."""
     dup = mesh_obj.copy()
     dup.data = mesh_obj.data.copy()
     bpy.context.collection.objects.link(dup)
@@ -164,41 +167,39 @@ def sample_surface_points(mesh_obj, target_count=1400):
     bpy.context.view_layer.objects.active = dup
     bpy.ops.object.modifier_apply(modifier=dec.name)
 
-    dup.data.calc_normals_split()
-    points, normals = [], []
     mesh = dup.data
     mesh.calc_normals_split()
+    points, normals = [], []
     for v in mesh.vertices:
         points.append(dup.matrix_world @ v.co)
         normals.append((dup.matrix_world.to_3x3() @ v.normal).normalized())
+    topo_edges = [tuple(e.vertices) for e in mesh.edges]
 
     bpy.data.objects.remove(dup, do_unlink=True)
-    return points, normals
+    return points, normals, topo_edges
 
 
-def build_network_edges(points, k_local=3, long_link_chance=0.05, long_radius=0.55):
+def build_network_edges(points, topo_edges, long_link_chance=0.012, long_radius=0.4):
+    """Use the decimated mesh's own edges as the network's struts (they run
+    along the surface by construction), plus a sparse sprinkle of longer
+    'synapse' links between nearby-but-unconnected nodes for visual interest."""
+    edges = set(tuple(sorted(e)) for e in topo_edges)
+
     kd = kdtree.KDTree(len(points))
     for i, p in enumerate(points):
         kd.insert(p, i)
     kd.balance()
 
-    edges = set()
-    degree = [0] * len(points)
-    for i, p in enumerate(points):
-        for (co, idx, dist) in kd.find_n(p, k_local + 1):
-            if idx == i:
-                continue
-            e = (min(i, idx), max(i, idx))
-            edges.add(e)
-
     for i, p in enumerate(points):
         if random.random() < long_link_chance:
             candidates = kd.find_range(p, long_radius)
-            far = [c for c in candidates if c[2] > long_radius * 0.5 and c[1] != i]
+            far = [c for c in candidates
+                   if long_radius * 0.5 < c[2] <= long_radius and c[1] != i]
             if far:
                 idx = random.choice(far)[1]
-                edges.add((min(i, idx), max(i, idx)))
+                edges.add(tuple(sorted((i, idx))))
 
+    degree = [0] * len(points)
     for a, b in edges:
         degree[a] += 1
         degree[b] += 1
@@ -206,10 +207,10 @@ def build_network_edges(points, k_local=3, long_link_chance=0.05, long_radius=0.
     return list(edges), degree
 
 
-LANDMARK_RADIUS = 0.05
-HUB_RADIUS = 0.024
-NODE_RADIUS = 0.0075
-STRUT_RADIUS = 0.0035
+LANDMARK_RADIUS = 0.042
+HUB_RADIUS = 0.018
+NODE_RADIUS = 0.006
+STRUT_RADIUS = 0.0028
 
 
 def build_network_mesh(points, normals, edges, degree, offset=0.012):
@@ -271,7 +272,7 @@ def make_body_material():
     bsdf.inputs["Roughness"].default_value = 0.30
     bsdf.inputs["Emission Color"].default_value = (0.05, 0.28, 0.42, 1.0)
     bsdf.inputs["Emission Strength"].default_value = 0.9
-    bsdf.inputs["Alpha"].default_value = 0.5
+    bsdf.inputs["Alpha"].default_value = 0.38
     nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
     return mat
 
@@ -287,7 +288,7 @@ def make_network_material():
     bsdf.inputs["Metallic"].default_value = 0.0
     bsdf.inputs["Roughness"].default_value = 0.18
     bsdf.inputs["Emission Color"].default_value = (0.25, 0.85, 1.0, 1.0)
-    bsdf.inputs["Emission Strength"].default_value = 4.0
+    bsdf.inputs["Emission Strength"].default_value = 2.2
     nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
     return mat
 
@@ -302,10 +303,10 @@ def main():
     body = metaball_to_clean_mesh(mball_obj)
     print(f"[build] body mesh verts={len(body.data.vertices)} polys={len(body.data.polygons)}")
 
-    points, normals = sample_surface_points(body, target_count=1400)
+    points, normals, topo_edges = sample_surface_points(body, target_count=650)
     print(f"[build] sampled {len(points)} network node candidates")
 
-    edges, degree = build_network_edges(points, k_local=3, long_link_chance=0.045, long_radius=0.55)
+    edges, degree = build_network_edges(points, topo_edges, long_link_chance=0.012, long_radius=0.4)
     print(f"[build] network edges={len(edges)}")
 
     network = build_network_mesh(points, normals, edges, degree, offset=0.012)
